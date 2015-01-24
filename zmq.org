@@ -1,0 +1,309 @@
+* 简介
+  ZMQ是个网络库。
+
+* 什么是可靠性
+  简单的讲，可靠性就是“当代码阻塞或挂掉时保持工作正常”。
+** 可能危害可靠性的地方，按照可能性倒序排列
+*** 应用程序的代码很糟糕，会crash、耗尽内存等。
+*** 系统代码
+    指的是比如broker这种通用组件
+*** 消息队列溢出
+    当消息队列溢出时，一般来说再来的消息就会被悄悄丢掉，这样就造成了丢失消息。
+*** 网络故障
+    比如网线断了。ZMQ会尝试重新连接，但一般来说可能会造成消息丢失。
+*** 机器故障
+    
+
+* 特点
+  - 后台线程异步处理IO。
+  - 组件能动态的上/下线。
+  - 当需要的时候会自动将消息加入队列。
+  - 当消息队列满时可以选择不同策略：阻塞sender，或者抛弃消息。
+  - 可以让你的程序用任意协议互联。
+  - 能处理慢速/阻塞的reader。
+  - 可以采用某些模式来路由消息。
+  - 能简单的创建代理。
+  - 保证消息是完整传送的。
+  - 不对要发送的消息有任何要求。
+  - 某些错误下会自动尝试重试。
+  - ZMQ不能和一般的socket混用，它对协议做了改变。
+
+
+* 基本概念
+** Context
+   - 每个线程必须有自己的context。
+   - 每个context有一个或多个后台IO线程。
+*** IO线程
+    一般来说每1GByte/sec的流量需要一个后台线程。如果要增加后台线程数量，需要在创建socket之前使用zmq_ctx_set()来设置。
+*** API
+    - zmq_ctx_new()
+    - zmq_ctx_destroy()
+      在调用之前必须保证其它资源全部释放，不然会挂起。
+    - zmq_ctx_set()
+      设置context的参数，比如后台IO线程数量：
+      #+BEGIN_SRC C
+        void *ctx = zmq_ctx_new();
+        zmq_ctx_set(ctx, ZMQ_IO_THREADS, 4);
+      #+END_SRC
+** Socket
+   - ZMQ的socket与一般的socket不同，它可以同时处理上千个连接。
+   - 如果需要打开和关闭大量的socket，那很可能是程序设计错误。
+   - 无法与一般的socket互通，除非设置为ZMQ_ROUTER_RAW。
+*** 传输类型
+**** TCP
+     - 又称为disconnected TCP，这是因为ZMQ中connect时不需要endpoint存在，客户端和服务端都可以随时上下线。
+**** IPC
+     - 也是disconnected的（非Windows系统）
+**** INPROC
+     线程间通讯
+     - 是connected的。
+     - 比tcp和ipc快得多。
+     - 服务端必须在任何客户端调用connect前调用bind（可能会在未来fix）。
+
+*** Socket类型
+**** REQ
+     用于发起一个请求消息。处于客户端的地位。
+     REQ在发送一个消息时，实际上在开头放置了一个空消息，作为envelope delimiter。收到回复时会在内部去掉这个空消息后，将里面的内容返回给上层程序。
+**** REP
+     REPLY接收到消息后，会剥离所有的envelope，取出内容传递给上层应用，处理完毕后再将envelope原封不动的包上传回去。
+**** ROUTER
+     当ROUTER收到消息时，会在消息最前面加一个envelope，其内容就是消息的来源连接的标识符，然后将包装后的消息给上层的程序。当ROUTER要发送消息时，会去掉最外层的envelope，然后从中找出应该发送给哪个连接，然后发送消息。这个过程是异步的。
+     如果ROUTER不知道该把消息发送给谁，那么它会悄悄的扔掉这个消息。不过可以设置一个socket属性ZMQ_ROUTER_MANDATORY，使得ROUTER在遇到这种情况时会产生错误EHOSTUNREACH。
+***** Identity
+      用于标识一个连接，目前版本中，是一个整数值。它只对生成它的ROUTER有意义。ROUTER通过identity来确定一个返回的消息应该通过哪个连接发送回去。
+      连接ROUTER的节点可以在连接之前设置socket属性ZMQ_IDENTITY来强迫ROUTER用逻辑地址作为identity，而不是随机的生成一个。
+      如果自定义id，那么可以短暂的掉线再上线，只要在ROUTER准备发送回复消息之前。
+
+***** 技巧
+      - 可以从ROUTER收到的包的第一个envelope中拿到REQ的连接的标识符，这样可以用来检查是否有新的REQ节点连进来了。
+**** DEALER
+     DEALER原封不动的发消息，如果它连接多个endpoint，那么会轮流发送，这个发送操作是异步的，它并不需要等待一个REQ得到回应了才开始发送下一个REQ。
+
+*** 选项
+**** ZMQ_ROUTER_RAW
+     能够不使用ZMQ的方式来读写数据。这样就能和普通的网络协议互通了，比如写一个http服务器。
+*** API
+    - zmq_socket()
+    - zmq_close()
+    - zmq_setsockopt()
+    - zmq_getsockopt()
+
+** Message
+*** 要点
+    - 可以发送0长度的message。
+    - 对于一个多片的消息，ZMQ保证全发或不发。
+    - 消息不是立刻被底层发送出去，或多或少会在队列中停留一段时间。
+    - A message must fit in memory.
+    - 对于接收的message，必须调用zmq_msg_close()；不过对于发送的message，不需要调用。
+    - 没事别用zmq_msg_init_data()。
+
+*** Message Part
+   - 一个消息至少包含一个message part
+   - 每个message part是一个zmq_msg_t的实例
+   - low-level API一次发送或接受一个message part
+   - high-level API可以处理多片消息。
+*** API
+**** 简单场景
+    - zmq_send()
+    - zmq_recv()
+      zmq_recv不容易处理任意大小的消息。
+**** 高级场景
+     这是基于zmq_msg_t结构体的一系列API。
+     - zmq_msg_init(), zmq_msg_init_size(), zmq_msg_init_data()
+       初始化。zmq_msg_init()创建空的消息，可以用来接收消息。zmq_msg_init_size()初始化一个指定大小的消息，然后用memcpy赋值，然后发送。
+     - zmq_msg_send(), zmq_msg_recv()
+       发送和接收消息。消息一旦发送就会被清空。
+     - zmq_msg_data(), zmq_msg_size(), zmq_msg_more()
+       访问消息内部数据。zmq_msg_data()用于访问消息内容。zmq_msg_size()用于查看消息大小。
+     - zmq_msg_get(), zmq_msg_set()
+       处理消息的属性
+     - zmq_msg_copy(), zmq_msg_move()
+       消息（内存）管理。如果要发送一个消息两次，需要用zmq_msg_init()创建一个空消息，然后用zmq_msg_copy复制。这个操作并不真的复制数据，只是增加了引用计数。
+     - zmq_msg_close()
+       释放消息（但不是销毁）
+
+
+** Envelope
+   有时候我们需要发送的消息分为key和data两部分，将key放在单独的message part中会比和data放在一起要好。这时候单独放置的key就是一个envelope。
+
+
+* 消息模型
+** Request-Reply模型
+   最简单的REQ消息，在内部都会附带一个空的envelope和一个delimiter。接收者会悄悄的剥离这个envelope，然后把消息正文传递给上层。因此，抓包来看的话，一个REQ消息实际是两个frame，第一个是空的，第二个就是实际发送的内容。
+   通过用poll来设置超时。
+*** 使用场景
+**** 简单
+     多个client连一个server。
+**** Broker
+     多个client连一个broker，多个worker也连这个broker，由broker来分派。
+**** 直接N对N
+*** 可靠性
+**** Server端挂掉
+     Client可以发现问题，因为无法收到回复了。
+**** Client端挂掉
+     Server可以直接忽视这个问题。
+
+
+*** 派生模型
+**** 扩展的Request-Reply模型
+     当一个REP接收多个REQ时，只能一个一个来处理，这样会很慢，因此需要扩展到多个REP来服务多个REQ。为了避免每个REQ都要知道所有的REP，需要引入一个中间层broker，由一对ROUTER和DEALER组成。
+     +---+		  	       	+---+
+     |REQ|----- 	     	  	     ---|REP|
+     +---+     \ +------+---+------+ /  	+---+
+               	X|ROUTER|   |DEALER|X
+     +---+     / +------+---+------+ \  	+---+
+     |REQ|-----         	       	     ---|REP|
+     +---+      			   	+---+
+**** 负载平衡模型
+     Extended Req-Rep模型的问题在于，DEALER只是轮流将请求发送给每个worker，如果某个worker处理得很慢，那么它就会积累过多的请求，但DEALER不会知道这个信息，依然会向它发送请求。
+     为了解决这个问题，需要worker向broker报告自己的状态。因此，我们将worker由REP改为REQ，worker上线时向broker发送一个“Ready”的请求，这样broker就知道哪个worker准备好了，于是可以将请求发送给这个worker。
+     Client与Server都连Broker，Broker前后端都是ROUTER。关键思想就是，有了连接的id，就能通过将id放入envelope的方式将消息通过这个连接发送。
+     (TODO)
+     
+
+*** 使用范式
+**** Lazy Pirate Pattern
+     1. 使用Poll来接收回复消息；
+     2. 如果超时，那么重发请求；
+     3. 在几次重发后依然没有回复，则断掉连接。
+
+*** 可连接组合
+    可以将REP和ROUTER想象为服务器，REQ和DEALER想象为客户端。
+
+**** REQ to REP
+     - 必须是REQ发起第一个消息，REP无法首先往REQ发送消息。
+     - 消息是同步处理的，REQ接收了回复后才能开始发送下一轮消息。REP也是必须处理完一个消息并回复后才能接收下一个请求。
+
+**** DEALER to REP
+     - DEALER是异步发起请求的，同时向多个REP发消息。
+     - 如果要用DEALER代替REQ，必须自己造一个envelope：
+       1) 使用MORE选项发送一个空的message作为delimiter
+       2) 发送消息本体。
+
+**** REQ to ROUTER
+     - ROUTER可以同时接受大量的请求而无需一个一个回复。
+
+**** DEALER to ROUTER
+
+**** DEALER to DEALER
+     - 将REP换成DEALER后就拥有了完全异步的服务器，可以接收任意多的请求，但必须自己处理envelope。
+     - 但是只能接收一个连接。
+
+**** ROUTER to ROUTER
+     - 可以实现N对N的场景，但很难使用好。
+
+** Publish-Subscribe
+*** 要点
+    1. 无法准确的知道订阅者何时开始获得数据。因此，就算订阅者比发布者早一点点启动，但由于API是异步的，并不能保证发起连接后就连接上了，因此还是可能漏掉一些信息。
+    2. 不要在Publisher的代码中使用等待。
+    3. 一个subscriber可以连接多个publisher
+    4. 如果没有subscriber连接上，那么publisher就会简单的丢弃消息。
+    5. 如果某个subscriber比较慢，那么publisher的消息可能就会堆积。
+    6. 设置subscriber时，必须设置opt ZMQ_SUBSCRIBE，这个选项设置了envelope过滤条件，NULL表示接受所有的。
+** Async Client/Server
+   Client端使用DEALER，这样可以任意的发送消息；Server前端使用ROUTER，这样可以任意的接收Client发过来的消息；Server后端用DEALER，将ROUTER来的信息原封不动发给后台worker。后台worker运行在服务端的子线程中，用DEALER连接Server后端，这样可以接收一个消息后返回任意多的消息。
+   核心思想是，DEALER不像REQ-REP那样严格的收发要求，因此用DEALER-ROUTER对替换REQ-REP对。
+   如果worker是严格一收一发的，那么可以用REP。
+   Backend将消息发给多个worker并接收这个过程不需要知道返回的消息来自于哪个worker，因此可以用DEALER对DEALER。
+   这个模式的缺点是可能会负载不平衡。
+   #+BEGIN_SRC dot :file async_client_server.png :cmdline -Tpng -Kdot
+     digraph G {
+       client -> broker;
+       worker -> broker;
+     }
+   #+END_SRC
+
+   #+RESULTS:
+   [[file:async_client_server.png]]
+
+
+** 可能的配对
+   - PUB and SUB
+   - REQ and REP
+   - REQ and ROUTER
+   - DEALER and REP
+   - DEALER and ROUTER
+   - DEALER and DEALER
+   - ROUTER and ROUTER
+   - PUSH and PULL
+   - PAIR and PAIR
+
+
+* 用法
+** 处理多endpoint
+   - 同类型的endpoint（比如都是PUB类型的服务端）可以用一个socket连，但不同类型就需要不同的socket。
+   - 使用zmq_poll()，或者包装为一个更易用的、消息驱动的reactor模式。但在ZMQ中不提供这一层包装。
+** Multipart Messages
+   - 每个part都是一个zmg_msg_t的实例，使用low-level API的话需要一个一个的处理。
+     + 发送
+       #+BEGIN_SRC c++
+         zmq_msg_send(&msg, socket, ZMQ_SNDMORE);
+         zmq_msg_send(&msg, socket, ZMQ_SNDMORE);
+         // ...
+         zmq_msg_send(&msg, socket, 0);
+       #+END_SRC
+     + 接收
+       #+BEGIN_SRC c++
+         while (true) {
+           zmq_msg_t message;
+           zmq_msg_init (&message);
+           zmq_msg_recv (&message, socket, 0);
+           //  Process the message frame
+           zmq_msg_close (&message);
+           if (!zmq_msg_more (&message)) {
+             break;      //  Last message frame
+           }
+          }
+       #+END_SRC
+   - 在发送multipart message时，只有最后一个part也调用了send后，才会真正的发送整个message。
+   - 如果用zmq_poll()，那么当接收到第一个part时，所有的part都已经在内存中了。
+   - 要么接收到一个message的全部part，要么一个都收不到。
+** 动态发现
+   XPUB and XSUB
+   给每个客户端配置服务器地址是个麻烦事，特别是服务端动态增加时。因此，增加一个中间层作为proxy势在必行。
+** Shared Queue
+   多个REQ和多个REP之间通讯的场景中，如果要增加REP节点，那么每个REQ节点都必须重新配置并重启。为了解决这个问题，需要引入代理，即ROUTER和DEALER。REQ与ROUTER通讯，REP与DEALER通讯，ROUTER和DEALER一般是在一个线程中互相通讯，它们只是简单的将各自收到的message转发给另一个。
+   由于这个模式很常用，因此API中有个专门的函数来实现：zmq_proxy(frontend, backend, capture)。
+** Transport Bridging
+   在不同的子网之间架设一个proxy，一个socket从内部service读数据，一个socket bind一个外部的endpoint，然后用zmq_proxy()联系起来。
+** 错误处理
+   一个系统应该做到对内部错误极端脆弱，对外部攻击极端健壮。
+   对于外部错误，一般是返回一个错误码，如果不处理，则悄悄丢掉这个message。
+   - 创建对象失败，则返回NULL
+   - 处理数据的函数，要么返回已处理的字节数，要么返回-1表示失败。
+   - 其它函数返回0表示成功，-1表示失败。
+   - 错误码用errno或zmq_errno()获得。
+   - 错误文本描述用zmq_strerror()获得。
+   特例
+   - 当使用选项ZMQ_DONTWAIT接收消息，且 there is no waiting data (?)，这时函数会返回-1，errno是EAGAIN。
+   - 如果在调用zmq_ctx_destroy()时其它线程正在执行阻塞任务，那么这些任务会返回-1，errno是ETERM。
+** 处理中断
+   - 如果在阻塞操作中发生了中断，那么操作会返回EINTR (?)
+** 多线程服务
+   - 创建一个context，然后在所有需要通过inproc互联的线程中使用这个context。
+   - 线程间不要共享socket。
+   - 线程间通讯唯一的手段就是使用message，这一点很重要，不要使用mutex等别的技术手段。
+   在主线程开一个router和dealer对，让客户端都与router连接，然后每个服务线程都与dealer连接。
+
+** High-Water Marks
+   对消息队列长度的一个限制，以免把内存撑爆了。
+
+*** 默认动作
+    - PUB 和 ROUTER 会丢弃
+    - 其他类型会阻塞
+
+*** 注意事项
+    - 对inproc传输来说，由于缓存是发送方和接收方共享的，因此总的HWM是两方的HWM之和。
+
+** 消息丢失
+   - 如果使用ROUTER类型的socket，当发送不正确的identity frames时就会发生丢失消息。建议设置ZMQ_ROUTER_MANDATORY属性。
+
+
+* 高级API
+** Reactor模式
+   zloop
+** 处理Ctrl C
+   使用zctx的时候实际就已经自动设置了signal handler，在代码中需要通过判断返回值来优雅的退出程序。
+   如果使用了子线程，那么在子线程中不会收到中断信息，必须让主线程去通知。具体做法有：
+   - 销毁context，这样子线程的函数调用会立刻结束，错误码是ETERM。
+   - 发送消息通知，并用代码处理。

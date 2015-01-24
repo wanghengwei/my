@@ -1,0 +1,61 @@
+* 基本数据结构
+** List
+*** 辅助函数
+**** 快速生成
+     - [x..y]
+       从x到y的等差数列，x可以是数字，也可以是字符
+**** 包含关系
+     elem :: Eq a => a -> [a] -> Bool
+
+* 基本语法
+** where
+** case
+*** 用途
+*** 语法
+    case expression of pattern1 -> result2
+                       pattern2 -> result2
+** if
+
+
+* 定义新数据类型
+** type
+*** 语法
+    #+BEGIN_SRC haskell
+      type NewTypeName = OldTypeName
+    #+END_SRC
+*** 用途
+    定义一个别名。
+** newtype
+*** 语法
+    #+BEGIN_SRC haskell
+      newtype WrapTypeName = WrapTypeValueConstructor deriving (SomeClass)
+    #+END_SRC
+    这里 WrapTypeValueConstructor 可以是record形式，即 Constructor { someFunction :: ValueType } 的形式。
+*** 用途
+    用来包装一个现有类型，使得它能改变某个class的行为。比如A属于Functor，有自己的fmap，可以用newtype定义一个B，仅仅是包装了A，但B的fmap与A不同。
+
+* TypeClass
+** deriving
+*** 语法
+    #+BEGIN_SRC haskell
+      data MyData = ValueConstructor deriving (TypeClass1, TypeClass2)
+    #+END_SRC
+*** 用途
+    将一个type加入一个界面。这样所有接收这个界面的函数都能接收这个type。
+** instance
+*** 用途
+    需要自定义某个界面的函数时
+
+* Functor
+** Applicative
+*** Module
+    Control.Applicative
+*** 定义
+*** 相关函数
+**** liftA2
+***** 定义
+      #+BEGIN_SRC haskell
+        liftA2 :: (Applicative f) => (a -> b -> c) -> f a -> f b -> f c
+      #+END_SRC
+***** 说明
+      实际上，liftA2 f x y 相当于 f <$> a <*> b，依次类推可知liftA3等。

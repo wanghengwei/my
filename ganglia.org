@@ -1,0 +1,76 @@
+#+TITLE: Ganglia
+
+* 创建Module
+** C/C++ Module
+   一个C/C++ Module由几个部分组成。
+*** mmodule
+    联系Ganglia与模块的纽带。可以在gm_metric.h中找到定义，它包含很多可以在代码中使用的信息，比如模块名、度量名等。
+**** Example
+     #+BEGIN_SRC C++
+       extern mmodule example_module;
+
+       mmodule example_module = {
+         STD_MMODULE_STUFF,
+         init,
+         cleanup,
+         info,
+         handler,
+       };
+     #+END_SRC
+*** Ganglia_25metric
+    名字很奇怪，用来存放度量的信息的。需要在mmodule结构体对象中保存一个指针。
+**** Example
+     #+BEGIN_SRC C++
+       static Ganglia_25metric info[] = {
+         {
+           0,
+           "MetricName",
+           90,                         // Interval Max
+           GANGLIA_VALUE_UNSIGNED_INT, // Data Type
+           "Num",                      // Unit
+           "both",                     // Slope
+           "%u",                       // Format
+           UDP_HEADER_SIZE + 8,        // UDP Message Size
+           "",                         // Description
+           NULL                        // Extra Data
+         },
+         { 0, NULL }
+       };
+     #+END_SRC
+*** metric_init
+    在这里主要是设置metric的额外信息，比如GROUP，或者其它初始化的工作。
+**** 设置额外MetaData
+     在[[Ganglia_25metric]]中，静态设置了若干元数据，但可能不够，比如没有分组设置。可以用如下方法为一个度量添加新的元数据：
+     #+BEGIN_SRC C++
+       // 分配内容
+       MMETRIC_INIT_METADATA(&(example_module.metrics_info[0]),p);
+       // 添加键值对作为元数据
+       MMETRIC_ADD_METADATA(&(example_module.metrics_info[0]),MGROUP,"random");
+       MMETRIC_ADD_METADATA(&(example_module.metrics_info[0]),MGROUP,"example");
+     #+END_SRC
+*** metric_cleanup
+    清理工作
+*** metric_handler
+**** 参数
+     一个表示度量序号（之前在 Ganglia_25metric中设置的）的整数。
+**** 返回值
+     类型为g_val_t的对象，表示度量的值。
+
+* 配置Module
+  模块由gmond直接调用，有两个最重要的属性需要配置：name和path。
+** Name
+   模块的名字就是之前讨论过的mmodule结构的对象名。
+** Path
+*** 绝对路径
+*** 文件名
+    用于查询的路径：
+    - module_dir :: 在global_section中配置的
+    - --with-moduledir :: 编译时指定
+    - --prefix :: 编译时指定
+    - lib(64)/ganglia :: 以上都失败时
+** 参数
+   有两种传递参数的办法
+*** 字符串传参
+    用params
+*** 参数列表
+    用多个param
